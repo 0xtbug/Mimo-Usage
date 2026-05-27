@@ -1,7 +1,7 @@
 <div align="center">
   <h1>MiMo Usage Dashboard</h1>
-  <img src="public/dashboard.png">
   <p><strong>A modern, multi-account dashboard for monitoring Xiaomi MiMo Token usage & API Limits</strong></p>
+  <img src="public/dashboard.png">
 
   <br />
   <br />
