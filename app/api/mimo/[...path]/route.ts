@@ -64,7 +64,8 @@ export async function GET(
       )
 
       try {
-        const refreshRes = await fetch("http://127.0.0.1:8787/api/refresh", {
+        const refreshUrl = new URL("/api/xiaomi/refresh", request.url).toString()
+        const refreshRes = await fetch(refreshUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ cookie }),
