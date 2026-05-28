@@ -1,53 +1,33 @@
 import { randomUUID } from "crypto"
-import { readFile, writeFile } from "fs/promises"
-import { existsSync, mkdirSync } from "fs"
-import { join } from "path"
+import { Redis } from "@upstash/redis"
 
-interface StoredAccount {
+export interface StoredAccount {
   id: string
   name: string
   cookie: string
 }
 
-const DATA_DIR = join(process.cwd(), "data")
-const ACCOUNTS_FILE = join(DATA_DIR, "accounts.json")
+const REDIS_KEY = "mimo_accounts"
 
-// In-memory cache to avoid repeated disk reads
-let accountsCache: StoredAccount[] | null = null
-let cacheTimestamp = 0
-const CACHE_TTL = 5_000 // 5 seconds
-
-function ensureDataDir() {
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true })
-  }
-}
+// Initialize Redis from environment variables
+const redis = Redis.fromEnv()
 
 async function readAccounts(): Promise<StoredAccount[]> {
-  const now = Date.now()
-  if (accountsCache && now - cacheTimestamp < CACHE_TTL) {
-    return accountsCache
-  }
-
-  ensureDataDir()
-  if (!existsSync(ACCOUNTS_FILE)) {
-    await writeFile(ACCOUNTS_FILE, "[]")
-    accountsCache = []
-    cacheTimestamp = now
+  try {
+    const data = await redis.get<StoredAccount[]>(REDIS_KEY)
+    return data || []
+  } catch (err) {
+    console.error("Failed to read accounts from Redis", err)
     return []
   }
-  const data = await readFile(ACCOUNTS_FILE, "utf-8")
-  const parsed = JSON.parse(data) as StoredAccount[]
-  accountsCache = parsed
-  cacheTimestamp = now
-  return parsed
 }
 
 export async function writeAccounts(accounts: StoredAccount[]) {
-  ensureDataDir()
-  await writeFile(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2))
-  accountsCache = accounts
-  cacheTimestamp = Date.now()
+  try {
+    await redis.set(REDIS_KEY, accounts)
+  } catch (err) {
+    console.error("Failed to write accounts to Redis", err)
+  }
 }
 
 export async function getAccounts(): Promise<StoredAccount[]> {
