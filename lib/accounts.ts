@@ -12,19 +12,34 @@ const REDIS_KEY = "mimo_accounts"
 // Initialize Redis from environment variables
 const redis = Redis.fromEnv()
 
+let accountsPromise: Promise<StoredAccount[]> | null = null
+let cacheTimestamp = 0
+const CACHE_TTL = 5_000 // 5 seconds
+
 async function readAccounts(): Promise<StoredAccount[]> {
-  try {
-    const data = await redis.get<StoredAccount[]>(REDIS_KEY)
-    return data || []
-  } catch (err) {
-    console.error("Failed to read accounts from Redis", err)
-    return []
+  const now = Date.now()
+  if (accountsPromise && now - cacheTimestamp < CACHE_TTL) {
+    return accountsPromise
   }
+
+  accountsPromise = redis
+    .get<StoredAccount[]>(REDIS_KEY)
+    .then((data) => data || [])
+    .catch((err) => {
+      console.error("Failed to read accounts from Redis", err)
+      return []
+    })
+
+  cacheTimestamp = now
+  return accountsPromise
 }
 
 export async function writeAccounts(accounts: StoredAccount[]) {
   try {
     await redis.set(REDIS_KEY, accounts)
+    // Instantly update local cache to ensure consistency
+    accountsPromise = Promise.resolve(accounts)
+    cacheTimestamp = Date.now()
   } catch (err) {
     console.error("Failed to write accounts to Redis", err)
   }
