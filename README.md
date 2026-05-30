@@ -53,6 +53,7 @@ flowchart LR
 - **Real-time Analytics**: Beautiful charts powered by Recharts to track your token usage.
 - **Secure Authentication**: Edge-compatible JWT-based session protection.
 - **API Key Management**: Generate and reset API keys per account natively.
+- **Silent Auto-Refresh**: Expired sessions are automatically refreshed in the background — no manual re-login needed.
 - **Dark Mode**: Built-in sleek dark theme support.
 
 ## Tech Stack
