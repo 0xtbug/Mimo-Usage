@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getAccountById, getAccounts, extractCookieValue } from "@/lib/accounts"
+import {
+  getAccountById,
+  getAccounts,
+  extractCookieValue,
+  updateAccountCookie,
+} from "@/lib/accounts"
+import { AuthService } from "@/features/auth/services/AuthService"
 
 const MIMO_BASE = "https://platform.xiaomimimo.com/api/v1/tokenPlan/apiKey"
 
@@ -14,22 +20,55 @@ const COMMON_HEADERS = {
 
 async function resolveCookie(
   accountId: string | null
-): Promise<string | undefined> {
+): Promise<{ cookie: string | undefined; resolvedAccountId: string | null }> {
   if (accountId) {
     const account = await getAccountById(accountId)
-    return account?.cookie
+    return { cookie: account?.cookie, resolvedAccountId: accountId }
   }
   const accounts = await getAccounts()
-  return accounts[0]?.cookie || process.env.MIMO_COOKIE
+  if (accounts.length > 0) {
+    return { cookie: accounts[0].cookie, resolvedAccountId: accounts[0].id }
+  }
+  return { cookie: process.env.MIMO_COOKIE, resolvedAccountId: null }
+}
+
+/**
+ * Attempt a silent cookie refresh when the MiMo API returns 401.
+ * Returns the new cookie string on success, or null on failure.
+ */
+async function tryRefreshCookie(
+  accountId: string,
+  currentCookie: string
+): Promise<string | null> {
+  try {
+    console.log(
+      `[ApiKey] 401 detected for account ${accountId}. Attempting silent refresh...`
+    )
+    const authService = new AuthService()
+    const refreshData = await authService.refresh(currentCookie)
+
+    if (refreshData.status === "success" && refreshData.cookie) {
+      console.log(`[ApiKey] Silent refresh successful! Updating stored cookie.`)
+      await updateAccountCookie(accountId, refreshData.cookie)
+      return refreshData.cookie
+    }
+
+    console.error("[ApiKey] Silent refresh failed:", refreshData.message)
+    return null
+  } catch (err) {
+    console.error("[ApiKey] Silent refresh threw an error:", err)
+    return null
+  }
 }
 
 /**
  * GET /api/apiKey?accountId=xxx
  * Proxies GET to MiMo /v1/tokenPlan/apiKey
+ * Auto-refreshes expired session cookies on 401.
  */
 export async function GET(request: NextRequest) {
   const accountId = request.nextUrl.searchParams.get("accountId")
-  const cookie = await resolveCookie(accountId)
+  const { cookie, resolvedAccountId } = await resolveCookie(accountId)
 
   if (!cookie) {
     return NextResponse.json(
@@ -39,11 +78,24 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const response = await fetch(MIMO_BASE, {
+    let response = await fetch(MIMO_BASE, {
       method: "GET",
       headers: { ...COMMON_HEADERS, Cookie: cookie },
     })
-    const data = await response.json()
+    let data = await response.json()
+
+    // Handle 401 – attempt silent refresh and retry
+    if (data.code === 401 && resolvedAccountId) {
+      const newCookie = await tryRefreshCookie(resolvedAccountId, cookie)
+      if (newCookie) {
+        response = await fetch(MIMO_BASE, {
+          method: "GET",
+          headers: { ...COMMON_HEADERS, Cookie: newCookie },
+        })
+        data = await response.json()
+      }
+    }
+
     return NextResponse.json(data)
   } catch {
     return NextResponse.json(
@@ -56,7 +108,8 @@ export async function GET(request: NextRequest) {
 /**
  * POST /api/apiKey
  * Body: { action: "create" | "reset", accountId?: string }
- * Proxies POST to MiMo create or reset endpoint
+ * Proxies POST to MiMo create or reset endpoint.
+ * Auto-refreshes expired session cookies on 401.
  */
 export async function POST(request: NextRequest) {
   const body = await request.json()
@@ -65,18 +118,30 @@ export async function POST(request: NextRequest) {
     accountId?: string
   }
 
-  const cookie = await resolveCookie(accountId || null)
+  const { cookie: initialCookie, resolvedAccountId } = await resolveCookie(
+    accountId || null
+  )
 
-  if (!cookie) {
+  if (!initialCookie) {
     return NextResponse.json(
       { code: -1, message: "No account configured. Add an account first." },
       { status: 500 }
     )
   }
 
-  // Extract api-platform_ph cookie value for CSRF protection
-  const platformPh = extractCookieValue(cookie, "api-platform_ph")
-  if (!platformPh) {
+  let activeCookie = initialCookie
+
+  // Helper to build the POST URL with the current cookie's CSRF token
+  function buildPostUrl(cookieStr: string) {
+    const platformPh = extractCookieValue(cookieStr, "api-platform_ph")
+    if (!platformPh) return null
+    return action === "reset"
+      ? `${MIMO_BASE}/reset?api-platform_ph=${encodeURIComponent(platformPh)}`
+      : `${MIMO_BASE}?api-platform_ph=${encodeURIComponent(platformPh)}`
+  }
+
+  let url = buildPostUrl(activeCookie)
+  if (!url) {
     return NextResponse.json(
       {
         code: -1,
@@ -87,17 +152,29 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  const url =
-    action === "reset"
-      ? `${MIMO_BASE}/reset?api-platform_ph=${encodeURIComponent(platformPh)}`
-      : `${MIMO_BASE}?api-platform_ph=${encodeURIComponent(platformPh)}`
-
   try {
-    const response = await fetch(url, {
+    let response = await fetch(url, {
       method: "POST",
-      headers: { ...COMMON_HEADERS, Cookie: cookie },
+      headers: { ...COMMON_HEADERS, Cookie: activeCookie },
     })
-    const data = await response.json()
+    let data = await response.json()
+
+    // Handle 401 – attempt silent refresh and retry
+    if (data.code === 401 && resolvedAccountId) {
+      const newCookie = await tryRefreshCookie(resolvedAccountId, activeCookie)
+      if (newCookie) {
+        activeCookie = newCookie
+        url = buildPostUrl(activeCookie)
+        if (url) {
+          response = await fetch(url, {
+            method: "POST",
+            headers: { ...COMMON_HEADERS, Cookie: activeCookie },
+          })
+          data = await response.json()
+        }
+      }
+    }
+
     return NextResponse.json(data)
   } catch {
     return NextResponse.json(
