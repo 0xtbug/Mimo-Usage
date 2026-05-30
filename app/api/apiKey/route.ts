@@ -3,9 +3,9 @@ import {
   getAccountById,
   getAccounts,
   extractCookieValue,
-  updateAccountCookie,
 } from "@/lib/accounts"
-import { AuthService } from "@/features/auth/services/AuthService"
+import { refreshCookieDeduped } from "@/lib/utils/refresh-lock"
+
 
 const MIMO_BASE = "https://platform.xiaomimimo.com/api/v1/tokenPlan/apiKey"
 
@@ -32,34 +32,6 @@ async function resolveCookie(
   return { cookie: process.env.MIMO_COOKIE, resolvedAccountId: null }
 }
 
-/**
- * Attempt a silent cookie refresh when the MiMo API returns 401.
- * Returns the new cookie string on success, or null on failure.
- */
-async function tryRefreshCookie(
-  accountId: string,
-  currentCookie: string
-): Promise<string | null> {
-  try {
-    console.log(
-      `[ApiKey] 401 detected for account ${accountId}. Attempting silent refresh...`
-    )
-    const authService = new AuthService()
-    const refreshData = await authService.refresh(currentCookie)
-
-    if (refreshData.status === "success" && refreshData.cookie) {
-      console.log(`[ApiKey] Silent refresh successful! Updating stored cookie.`)
-      await updateAccountCookie(accountId, refreshData.cookie)
-      return refreshData.cookie
-    }
-
-    console.error("[ApiKey] Silent refresh failed:", refreshData.message)
-    return null
-  } catch (err) {
-    console.error("[ApiKey] Silent refresh threw an error:", err)
-    return null
-  }
-}
 
 /**
  * GET /api/apiKey?accountId=xxx
@@ -86,7 +58,7 @@ export async function GET(request: NextRequest) {
 
     // Handle 401 – attempt silent refresh and retry
     if (data.code === 401 && resolvedAccountId) {
-      const newCookie = await tryRefreshCookie(resolvedAccountId, cookie)
+      const newCookie = await refreshCookieDeduped(resolvedAccountId, cookie)
       if (newCookie) {
         response = await fetch(MIMO_BASE, {
           method: "GET",
@@ -161,7 +133,7 @@ export async function POST(request: NextRequest) {
 
     // Handle 401 – attempt silent refresh and retry
     if (data.code === 401 && resolvedAccountId) {
-      const newCookie = await tryRefreshCookie(resolvedAccountId, activeCookie)
+      const newCookie = await refreshCookieDeduped(resolvedAccountId, activeCookie)
       if (newCookie) {
         activeCookie = newCookie
         url = buildPostUrl(activeCookie)

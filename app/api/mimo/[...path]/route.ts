@@ -1,7 +1,17 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getAccountById, getAccounts } from "@/lib/accounts"
+import { refreshCookieDeduped } from "@/lib/utils/refresh-lock"
 
 const MIMO_BASE = "https://platform.xiaomimimo.com/api/v1"
+
+const COMMON_HEADERS = {
+  Accept: "*/*",
+  "Accept-Language": "en",
+  "Content-Type": "application/json",
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+  "x-timezone": "Asia/Bangkok",
+}
 
 export async function GET(
   request: NextRequest,
@@ -44,62 +54,20 @@ export async function GET(
   try {
     let response = await fetch(url, {
       method: "GET",
-      headers: {
-        Accept: "*/*",
-        "Accept-Language": "en",
-        "Content-Type": "application/json",
-        Cookie: cookie,
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-        "x-timezone": "Asia/Bangkok",
-      },
+      headers: { ...COMMON_HEADERS, Cookie: cookie },
     })
 
     let data = await response.json()
 
     // Handle Mimo 401 Unauthorized (token expired)
     if (data.code === 401 && accountId) {
-      console.log(
-        `[Proxy] 401 Unauthorized detected for account ${accountId}. Attempting silent refresh...`
-      )
-
-      try {
-        const refreshUrl = new URL("/api/xiaomi/refresh", request.url).toString()
-        const refreshRes = await fetch(refreshUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cookie }),
+      const newCookie = await refreshCookieDeduped(accountId, cookie)
+      if (newCookie) {
+        response = await fetch(url, {
+          method: "GET",
+          headers: { ...COMMON_HEADERS, Cookie: newCookie },
         })
-
-        const refreshData = await refreshRes.json()
-
-        if (refreshData.status === "success" && refreshData.cookie) {
-          console.log(`[Proxy] Silent refresh successful! Retrying request...`)
-
-          // 1. Save new cookie to database
-          const { updateAccountCookie } = await import("@/lib/accounts")
-          await updateAccountCookie(accountId, refreshData.cookie)
-
-          // 2. Retry the original request
-          response = await fetch(url, {
-            method: "GET",
-            headers: {
-              Accept: "*/*",
-              "Accept-Language": "en",
-              "Content-Type": "application/json",
-              Cookie: refreshData.cookie,
-              "User-Agent":
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-              "x-timezone": "Asia/Bangkok",
-            },
-          })
-
-          data = await response.json()
-        } else {
-          console.error("[Proxy] Silent refresh failed:", refreshData.message)
-        }
-      } catch (err) {
-        console.error("[Proxy] Silent refresh threw an error:", err)
+        data = await response.json()
       }
     }
 
@@ -111,3 +79,4 @@ export async function GET(
     )
   }
 }
+
